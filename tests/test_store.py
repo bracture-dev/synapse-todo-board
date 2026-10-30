@@ -7,6 +7,7 @@ shape Upjack writes them, including a custom field Upjack never declared.
 from __future__ import annotations
 
 import json
+import shutil
 import stat
 from pathlib import Path
 
@@ -19,6 +20,8 @@ from synapse_todo_board.store import BoardStore
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LEGACY = json.loads((Path(__file__).parent / "fixtures/legacy-workspace.json").read_text())
 DATA = "apps/todo-board/data"
+EXTENSIONS = "apps/todo-board/schemas"
+NEW_BOARD = {"name": "New", "columns": [{"key": "todo", "label": "To Do"}]}
 
 
 @pytest.fixture
@@ -244,3 +247,115 @@ def test_a_scan_skips_files_that_are_not_records(store, workspace, tmp_path):
     found = store.query_by_relationship("task", "belongs_to", LEGACY["board"]["id"])
     assert [task["id"] for task in found] == expected
     assert store.rebuild_index()["entries"] == 1
+
+
+def test_add_field_saves_the_field_in_the_workspace_not_the_app_schemas(store, workspace):
+    app_schema = (PROJECT_ROOT / "schemas/board.schema.json").read_bytes()
+
+    result = store.add_field("board", "department", "string", "General", "Owning team")
+
+    assert result == {
+        "success": True,
+        "entity_type": "board",
+        "field": {"name": "department", "type": "string", "default": "General", "required": True},
+    }
+    assert (PROJECT_ROOT / "schemas/board.schema.json").read_bytes() == app_schema
+    saved = json.loads((workspace / EXTENSIONS / "board.fields.json").read_text())
+    assert saved == {
+        "version": 1,
+        "fields": {
+            "department": {
+                "type": "string",
+                "default": "General",
+                "required": True,
+                "description": "Owning team",
+            }
+        },
+    }
+    assert store.create_entity("board", NEW_BOARD)["department"] == "General"
+    reopened = BoardStore(workspace, PROJECT_ROOT)
+    assert reopened.schemas["board"]["required"] == ["name", "columns", "department"]
+    assert reopened.create_entity("board", NEW_BOARD)["department"] == "General"
+
+
+def test_records_written_before_an_added_field_read_with_its_default(store, workspace):
+    task_id = LEGACY["task"]["id"]
+    assert store.add_field("task", "estimate", "integer", 0)["success"]
+
+    assert store.get_entity("task", task_id)["estimate"] == 0
+    updated = store.update_entity("task", task_id, {"title": "Renamed"})
+    assert updated["estimate"] == 0
+    assert updated["legacy_custom"] == {"keep": True}
+    with pytest.raises(ValidationError):
+        store.update_entity("task", task_id, {"estimate": "large"})
+
+
+@pytest.mark.parametrize(
+    ("args", "error"),
+    [
+        (("note", "points", "integer", 1), "Unknown entity type 'note'"),
+        (("task", "Points", "integer", 1), "Invalid field_name 'Points'"),
+        (("task", "status", "string", "open"), "reserved base entity field"),
+        (("task", "priority", "string", "low"), "Field 'priority' already exists"),
+        (("task", "points", "date", "2026-01-01"), "Invalid field_type 'date'"),
+        (("task", "points", "integer", True), "not compatible with type 'integer'"),
+        (("task", "points", "integer", 1, "", "yes"), "needs required set to true or false"),
+        (("task", "points", "integer", 1, 42), "needs a text description"),
+    ],
+)
+def test_add_field_rejects_a_bad_field_and_writes_nothing(store, workspace, args, error):
+    schemas = json.dumps(store.schemas)
+
+    result = store.add_field(*args)
+
+    assert error in result["error"]
+    assert not (workspace / EXTENSIONS).exists()
+    assert json.dumps(store.schemas) == schemas
+
+
+def test_add_field_rejects_a_field_it_already_added(store, workspace):
+    opened_before = BoardStore(workspace, PROJECT_ROOT)
+    assert store.add_field("task", "points", "integer", 1)["success"]
+    path = workspace / EXTENSIONS / "task.fields.json"
+    before = path.read_bytes()
+
+    for either in (store, opened_before):
+        assert either.add_field("task", "points", "string", "one") == {
+            "error": "Field 'points' already exists"
+        }
+    assert path.read_bytes() == before
+
+
+def test_a_field_the_app_later_ships_keeps_the_app_definition(tmp_path, workspace):
+    project = tmp_path / "project"
+    shutil.copytree(PROJECT_ROOT / "schemas", project / "schemas")
+    store = BoardStore(workspace, project)
+    assert store.add_field("board", "department", "string", "General")["success"]
+    shipped = json.loads((project / "schemas/board.schema.json").read_text())
+    shipped["properties"]["department"] = {"type": "string", "default": "Operations"}
+    shipped["properties"]["archived_view"] = {"type": "boolean", "default": False}
+    (project / "schemas/board.schema.json").write_text(json.dumps(shipped))
+
+    created = BoardStore(workspace, project).create_entity("board", NEW_BOARD)
+
+    assert created["department"] == "Operations"
+    assert created["archived_view"] is False
+
+
+@pytest.mark.parametrize(
+    "saved",
+    [
+        '{"version": 1, "fields": {',
+        '{"version": 2, "fields": {}}',
+        '{"version": true, "fields": {}}',
+        '{"version": 1, "fields": {}, "extra": 1}',
+        '{"version": 1, "fields": {"points": {"type": "integer", "default": "x", "required": true}}}',
+    ],
+)
+def test_an_unreadable_extensions_file_stops_the_store_loading(workspace, saved):
+    path = workspace / EXTENSIONS / "task.fields.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(saved)
+
+    with pytest.raises(ValueError, match="apps/todo-board/schemas/task.fields.json"):
+        BoardStore(workspace, PROJECT_ROOT)

@@ -2,7 +2,10 @@
 
 Records live at ``apps/todo-board/data/{boards,tasks}/<id>.json`` under the
 workspace root, exactly where Upjack writes them, so a workspace Upjack wrote
-reads back unchanged. The server does not use this store yet.
+reads back unchanged. Fields added with ``add_field`` are kept in the
+workspace too, at ``apps/todo-board/schemas/<kind>.fields.json``, and the
+app's own schema files are never edited. The server does not use this store
+yet.
 """
 
 from __future__ import annotations
@@ -24,14 +27,42 @@ from ulid import ULID
 ENTITIES = {"board": ("boards", "bd"), "task": ("tasks", "tk")}
 IMMUTABLE = {"id", "type", "version", "created_at", "created_by"}
 INDEX = "apps/todo-board/data/_index/relations.json"
+EXTENSIONS = "apps/todo-board/schemas/{}.fields.json"
 BASE_REF = "https://upjack.dev/schemas/v1/upjack-entity.schema.json"
 COMPARISONS = {"$gt": operator.gt, "$gte": operator.ge, "$lt": operator.lt, "$lte": operator.le}
+FIELD_TYPES = ("array", "boolean", "integer", "number", "object", "string")
 
 Record = dict[str, Any]
 
 
 def _timestamp() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _extension_error(name: Any, field: Any) -> str | None:
+    """Say what is wrong with one added field, or return None when it is valid."""
+    if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", name):
+        return f"Invalid field_name '{name}'. Must match [a-z][a-z0-9_]*"
+    if not isinstance(field, dict) or set(field) - {"type", "default", "description", "required"}:
+        return f"Invalid definition for field '{name}'"
+    field_type = field.get("type")
+    if field_type not in FIELD_TYPES:
+        return f"Invalid field_type '{field_type}'. Allowed: {list(FIELD_TYPES)}"
+    # Creates validate the default they fill in, so it must pass the JSON
+    # Schema type check, which rejects True for an integer field.
+    default = field.get("default")
+    if "default" not in field or not Draft202012Validator({"type": field_type}).is_valid(default):
+        return f"Default value {default!r} is not compatible with type '{field_type}'"
+    if not isinstance(field.get("required"), bool):
+        return f"Field '{name}' needs required set to true or false"
+    if not isinstance(field.get("description", ""), str):
+        return f"Field '{name}' needs a text description"
+    return None
+
+
+def _inherited(schema: Record) -> set[str]:
+    """Field names a kind inherits through ``allOf``, the base entity fields."""
+    return {name for part in schema.get("allOf", []) for name in part.get("properties", {})}
 
 
 def _matches_filter(entity: Record, filters: Record | None) -> bool:
@@ -79,7 +110,39 @@ class BoardStore:
         schema["allOf"] = [
             base if part.get("$ref") == BASE_REF else part for part in schema.get("allOf", [])
         ]
+        properties = schema.setdefault("properties", {})
+        for name, field in self._read_extensions(kind).items():
+            # A field the app or the base entity now defines keeps that
+            # definition, so an app update that ships the same field still loads.
+            if name in properties or name in _inherited(schema):
+                continue
+            error = _extension_error(name, field)
+            if error:
+                raise ValueError(f"Invalid field in {EXTENSIONS.format(kind)}: {error}")
+            properties[name] = {key: value for key, value in field.items() if key != "required"}
+            if field["required"] and name not in schema.get("required", []):
+                schema.setdefault("required", []).append(name)
         return schema
+
+    def _read_extensions(self, kind: str) -> Record:
+        relative = EXTENSIONS.format(kind)
+        try:
+            saved = json.loads(self._path(relative).read_text())
+        except FileNotFoundError:
+            return {}
+        except json.JSONDecodeError as error:
+            raise ValueError(f"Invalid JSON in {relative}: {error}") from None
+        # Refuse anything add_field would not write, as for a field: unknown
+        # keys, and a version of True or 1.0, which Python counts as equal to 1.
+        if (
+            not isinstance(saved, dict)
+            or set(saved) != {"version", "fields"}
+            or type(saved["version"]) is not int
+            or saved["version"] != 1
+            or not isinstance(saved["fields"], dict)
+        ):
+            raise ValueError(f"Unsupported version or layout in {relative}")
+        return saved["fields"]
 
     def _path(self, relative: str) -> Path:
         path = self.root / relative
@@ -322,3 +385,50 @@ class BoardStore:
                             entries.append(entry)
             self._atomic(self._path(INDEX), {"reverse": reverse})
             return {"success": True, "entries": sum(map(len, reverse.values()))}
+
+    def add_field(
+        self,
+        entity_type: str,
+        field_name: str,
+        field_type: str,
+        default: Any,
+        description: str = "",
+        required: bool = True,
+    ) -> Record:
+        """Add a field with a valid default to one kind's schema.
+
+        Upjack wrote the field into the app's own schema file, which an app
+        update replaces. Here it is saved in the workspace with the records,
+        and reads fill its default into records written before it existed.
+        A rejected field comes back as ``{"error": ...}``, as it did from Upjack.
+        """
+        if entity_type not in ENTITIES:
+            return {"error": f"Unknown entity type '{entity_type}'"}
+        field = {"type": field_type, "default": default, "required": required}
+        if description != "":
+            field["description"] = description
+        error = _extension_error(field_name, field)
+        if error:
+            return {"error": error}
+        with self.lock:
+            schema = self.schemas[entity_type]
+            if field_name in _inherited(schema):
+                return {"error": f"Field '{field_name}' is a reserved base entity field"}
+            fields = self._read_extensions(entity_type)
+            # The file also holds fields another store on this workspace added.
+            if field_name in schema["properties"] or field_name in fields:
+                return {"error": f"Field '{field_name}' already exists"}
+            fields[field_name] = field
+            path = self._path(EXTENSIONS.format(entity_type))
+            self._atomic(path, {"version": 1, "fields": fields})
+            self.schemas[entity_type] = self._load_schema(entity_type)
+        return {
+            "success": True,
+            "entity_type": entity_type,
+            "field": {
+                "name": field_name,
+                "type": field_type,
+                "default": default,
+                "required": required,
+            },
+        }
