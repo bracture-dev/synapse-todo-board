@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useSynapse, useDataSync } from "@nimblebrain/synapse/react";
+import { useApp, useDataSync } from "@nimblebrain/synapse/react";
 
 export interface BoardColumn {
   key: string;
@@ -25,7 +25,7 @@ export interface Board {
  * Refreshes automatically on board entity changes.
  */
 export function useBoards() {
-  const synapse = useSynapse();
+  const app = useApp();
   const [boards, setBoards] = useState<Board[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -35,7 +35,7 @@ export function useBoards() {
     const id = ++callId.current;
     setError(null);
     try {
-      const result = await synapse.callTool<Record<string, unknown>, Board[]>(
+      const result = await app.callTool<Board[] | { entities: Board[] }>(
         "list_boards",
       );
       // Stale guard: only apply if this is still the latest call
@@ -60,17 +60,15 @@ export function useBoards() {
         setLoading(false);
       }
     }
-  }, [synapse]);
+  }, [app]);
 
-  // Initial fetch once synapse is ready
+  // AppProvider mounts this hook after the host handshake.
   useEffect(() => {
-    synapse.ready.then(() => refresh());
-  }, [synapse, refresh]);
+    void refresh();
+  }, [app, refresh]);
 
   // Subscribe to any data change — refresh boards broadly
-  useDataSync(() => {
-    refresh();
-  });
+  useDataSync(refresh);
 
   return { boards, loading, error, refresh } as const;
 }

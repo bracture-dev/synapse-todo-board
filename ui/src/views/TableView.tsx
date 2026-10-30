@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback } from "react";
 import FilterBar, { EMPTY_FILTERS, type Filters, type ColumnDef } from "../components/FilterBar";
-import type { Synapse } from "@nimblebrain/synapse";
+import type { App } from "@nimblebrain/synapse";
 import { Badge, Button, Inline } from "@nimblebrain/synapse/ui";
 import { PRIORITY_TONE, useStyleTokens, type ResolvedTokens } from "../tokens";
 
@@ -27,7 +27,7 @@ export interface Board {
 export interface TableViewProps {
   tasks: Task[];
   board: Board;
-  callTool: Synapse["callTool"];
+  callTool: App["callTool"];
   onRefresh?: () => void;
 }
 

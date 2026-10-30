@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { BoardColumn } from "../hooks/useBoards";
 import type { Task } from "../hooks/useTasks";
-import { useSynapse } from "@nimblebrain/synapse/react";
+import { useApp } from "@nimblebrain/synapse/react";
 import { Button, Drawer, Stack, TextLink } from "@nimblebrain/synapse/ui";
 import { useStyleTokens } from "../tokens";
 import { errorStyle, inputStyle, labelStyle } from "../formStyles";
@@ -24,7 +24,7 @@ const EFFORTS = ["trivial", "small", "medium", "large", "epic"] as const;
  * (CreateTaskDialog), so this panel is edit-only.
  */
 export function TaskDetail({ task, columns, onClose, onSaved }: TaskDetailProps) {
-  const synapse = useSynapse();
+  const app = useApp();
   const t = useStyleTokens();
 
   const [title, setTitle] = useState(task.title ?? "");
@@ -58,13 +58,13 @@ export function TaskDetail({ task, columns, onClose, onSaved }: TaskDetailProps)
     try {
       // If the column changed, use move_task first for WIP enforcement.
       if (column !== task.column) {
-        await synapse.callTool("move_task", {
+        await app.callTool("move_task", {
           task_id: task.id,
           target_column: column,
         });
       }
 
-      const result = await synapse.callTool("update_task", {
+      const result = await app.callTool("update_task", {
         task_id: task.id,
         title,
         description: description || undefined,
@@ -86,13 +86,13 @@ export function TaskDetail({ task, columns, onClose, onSaved }: TaskDetailProps)
     } finally {
       setSaving(false);
     }
-  }, [synapse, task, title, description, priority, column, assignee, dueDate, effort, onClose, onSaved]);
+  }, [app, task, title, description, priority, column, assignee, dueDate, effort, onClose, onSaved]);
 
   const handleArchive = useCallback(async () => {
     setSaving(true);
     setError(null);
     try {
-      const result = await synapse.callTool("archive_task", {
+      const result = await app.callTool("archive_task", {
         task_id: task.id,
       });
       if (result.isError) {
@@ -106,7 +106,7 @@ export function TaskDetail({ task, columns, onClose, onSaved }: TaskDetailProps)
     } finally {
       setSaving(false);
     }
-  }, [synapse, task, onClose, onSaved]);
+  }, [app, task, onClose, onSaved]);
 
   return (
     <Drawer open onClose={onClose} width={420} side={isCoarse ? "bottom" : "right"}>

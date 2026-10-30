@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSynapse, useDataSync } from "@nimblebrain/synapse/react";
+import { useApp, useDataSync } from "@nimblebrain/synapse/react";
 
 export interface Task {
   id: string;
@@ -28,7 +28,7 @@ export type TasksByColumn = Record<string, Task[]>;
  * Provides a `tasksByColumn` grouped view for the board.
  */
 export function useTasks(boardId: string | null) {
-  const synapse = useSynapse();
+  const app = useApp();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -44,7 +44,7 @@ export function useTasks(boardId: string | null) {
     const id = ++callId.current;
     setError(null);
     try {
-      const result = await synapse.callTool<Record<string, unknown>, Task[]>(
+      const result = await app.callTool<Task[] | { entities: Task[] }>(
         "query_tasks_by_relationship",
         { rel: "belongs_to", target_id: boardId },
       );
@@ -69,18 +69,16 @@ export function useTasks(boardId: string | null) {
         setLoading(false);
       }
     }
-  }, [boardId, synapse]);
+  }, [boardId, app]);
 
-  // Initial fetch once synapse is ready and boardId is set
+  // AppProvider mounts this hook after the host handshake.
   useEffect(() => {
-    synapse.ready.then(() => refresh());
-  }, [synapse, refresh]);
+    void refresh();
+  }, [app, refresh]);
 
   // Subscribe to any data change — refresh tasks broadly since the agent
   // may call tools with names that don't contain "task" (e.g. batch operations)
-  useDataSync(() => {
-    refresh();
-  });
+  useDataSync(refresh);
 
   /** Tasks grouped by column key, sorted by position (ascending). */
   const tasksByColumn = useMemo<TasksByColumn>(() => {

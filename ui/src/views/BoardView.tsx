@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { useSynapse } from "@nimblebrain/synapse/react";
+import { useApp } from "@nimblebrain/synapse/react";
 import Column from "../components/Column.js";
 import type { ColumnDef } from "../components/Column.js";
 import type { Task } from "../components/TaskCard.js";
@@ -31,7 +31,7 @@ export default function BoardView({
   onAddTask,
   onRefresh,
 }: BoardViewProps) {
-  const synapse = useSynapse();
+  const app = useApp();
   // Group tasks by column key
   const tasksByColumn = new Map<string, Task[]>();
   for (const col of board.columns) {
@@ -47,7 +47,7 @@ export default function BoardView({
   // Handle drag-and-drop: call move_task via Synapse
   async function handleDrop(taskId: string, _sourceColumn: string, targetColumn: string) {
     try {
-      await synapse.callTool("move_task", {
+      await app.callTool("move_task", {
         task_id: taskId,
         target_column: targetColumn,
       });

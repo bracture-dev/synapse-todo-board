@@ -1,4 +1,4 @@
-import { tokens as ui } from "@nimblebrain/synapse/ui";
+import { tokens as ui, type BadgeTone } from "@nimblebrain/synapse/ui";
 
 /**
  * Todo-board token shape, backed by the shared `@nimblebrain/synapse/ui` token
@@ -64,10 +64,10 @@ export function useStyleTokens(): ResolvedTokens {
  * Maps a task priority onto a library `Badge` tone, so priority chips draw from
  * the shared semantic palette (host-themeable) instead of fixed hex.
  */
-export const PRIORITY_TONE: Record<string, "danger" | "warning" | "warm" | "accent" | "neutral"> = {
+export const PRIORITY_TONE: Record<string, BadgeTone> = {
   critical: "danger",
   high: "warning",
-  medium: "warm",
+  medium: "processing",
   low: "accent",
   none: "neutral",
 };
